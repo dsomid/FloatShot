@@ -27,8 +27,11 @@
 | Right-click: AirDrop text or image | ✅ | — |
 | Right-click: Save Image | — | ✅ |
 | Record screen / record region | ✅ `.mov` | ✅ `.mp4` |
+| Recording frame + click-to-stop timer | ✅ | — |
+| Custom shortcut for every action | ✅ | ✅ |
+| Open at Login | ✅ | ✅ |
 
-Shots stay put until you right-click and choose **Delete**.
+Shots stay put until you right-click and choose **Delete**. Change any shortcut in **Settings…** from the menu-bar (or tray) icon.
 
 ## Install
 

@@ -2,6 +2,14 @@
 
 All notable changes to FloatShot. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.6.0] - 2026-10-22
+
+### Added
+- **Custom keyboard shortcuts.** A new *Settings…* window lets you set, change or clear a global shortcut for Capture Region, Record Screen, Record Region and Stop Recording. The menu shows each action's current shortcut, conflicts are resolved automatically, and *Restore Defaults* brings back ⇧⌘2 / Ctrl+Shift+2.
+- **Open at Login.** A menu toggle that starts FloatShot automatically when you log in (macOS login item, Windows startup apps, Linux autostart).
+- **Recording frame.** While recording, a red dashed frame with corner marks shows exactly what's being captured, plus a timer badge you can click to stop. Neither appears in the video. (macOS)
+- **Single-file Windows EXE** (`FloatShot-windows-x64.exe`): download and double-click, nothing to unzip or install.
+
 ## [1.3.0] - 2026-10-22
 
 ### Added
@@ -25,5 +33,6 @@ First public release.
 - Right-click menu: Copy Text from Image, AirDrop Text from Image, AirDrop Image, Delete. Delete is the only way a shot is removed.
 - App icon, version shown in the menu bar, and install via Homebrew (`dsomid/tap/floatshot`).
 
+[1.6.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.6.0
 [1.3.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.3.0
 [1.1.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.1.0

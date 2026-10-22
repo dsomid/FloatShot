@@ -13,15 +13,15 @@ from pathlib import Path
 
 import mss
 import numpy as np
-from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QCursor, QFont, QGuiApplication, QIcon, QImage,
-                           QPainter, QPainterPath, QPen, QPixmap)
-from PySide6.QtWidgets import (QApplication, QColorDialog, QHBoxLayout, QInputDialog,
+                           QKeySequence, QPainter, QPainterPath, QPen, QPixmap)
+from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog, QDialogButtonBox,
+                               QFormLayout, QHBoxLayout, QInputDialog, QKeySequenceEdit, QPushButton,
                                QLabel, QMenu, QMessageBox, QPlainTextEdit, QSystemTrayIcon,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "1.3.0"
-HOTKEY = "<ctrl>+<shift>+2"
+VERSION = "1.6.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 
 
@@ -325,10 +325,139 @@ class Recorder:
         return self.path
 
 
+# MARK: - Open at login
+
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart" / "floatshot.desktop"
+
+
+def launch_command() -> str:
+    # Frozen builds launch themselves; from source, run this script with the same Python.
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    return f'"{sys.executable}" "{Path(__file__).resolve()}"'
+
+
+def open_at_login_enabled() -> bool:
+    if sys.platform == "win32":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+                winreg.QueryValueEx(key, "FloatShot")
+            return True
+        except OSError:
+            return False
+    return AUTOSTART.exists()
+
+
+def set_open_at_login(enabled: bool):
+    if sys.platform == "win32":
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, "FloatShot", 0, winreg.REG_SZ, launch_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, "FloatShot")
+                except FileNotFoundError:
+                    pass
+    elif enabled:
+        AUTOSTART.parent.mkdir(parents=True, exist_ok=True)
+        AUTOSTART.write_text("[Desktop Entry]\nType=Application\nName=FloatShot\n"
+                             f"Exec={launch_command()}\nX-GNOME-Autostart-enabled=true\n")
+    else:
+        AUTOSTART.unlink(missing_ok=True)
+
+
 # MARK: - Tray app
 
+ACTIONS = {  # id -> (title, default shortcut in Qt notation)
+    "capture_region": ("Capture Region", "Ctrl+Shift+2"),
+    "record_screen": ("Record Screen", ""),
+    "record_region": ("Record Region", ""),
+    "stop_recording": ("Stop Recording", ""),
+}
+settings = QSettings("FloatShot", "FloatShot")
+
+
+def shortcut_for(action: str) -> str:
+    return settings.value(f"shortcuts/{action}", ACTIONS[action][1])
+
+
+def to_pynput(sequence: str) -> str | None:
+    """'Ctrl+Shift+2' -> '<ctrl>+<shift>+2' for pynput's GlobalHotKeys."""
+    if not sequence:
+        return None
+    names = {"ctrl": "<ctrl>", "shift": "<shift>", "alt": "<alt>", "meta": "<cmd>", "space": "<space>",
+             "tab": "<tab>", "return": "<enter>", "enter": "<enter>", "esc": "<esc>", "del": "<delete>",
+             "backspace": "<backspace>", "home": "<home>", "end": "<end>", "pgup": "<page_up>",
+             "pgdown": "<page_down>", "ins": "<insert>", "print": "<print_screen>",
+             "left": "<left>", "right": "<right>", "up": "<up>", "down": "<down>"}
+    parts = []
+    for part in sequence.split("+"):
+        key = part.strip().lower()
+        if key in names:
+            parts.append(names[key])
+        elif key.startswith("f") and key[1:].isdigit():
+            parts.append(f"<{key}>")
+        elif len(key) == 1:
+            parts.append(key)
+        else:
+            return None
+    return "+".join(parts)
+
+
+class SettingsDialog(QDialog):
+    """Lets the user record a key combination for each action."""
+
+    def __init__(self, on_save):
+        super().__init__(None, Qt.WindowStaysOnTopHint)
+        self.setWindowTitle("FloatShot Settings")
+        self.on_save = on_save
+        self.edits = {}
+        form = QFormLayout()
+        for action, (title, _) in ACTIONS.items():
+            edit = QKeySequenceEdit(QKeySequence(shortcut_for(action)))
+            edit.setMaximumSequenceLength(1)
+            edit.setClearButtonEnabled(True)
+            self.edits[action] = edit
+            form.addRow(title + ":", edit)
+        hint = QLabel("Click a field and press the new key combination. Include Ctrl, Alt or Win "
+                      "(or use a function key). Use the ✕ to clear.")
+        hint.setWordWrap(True)
+        reset = QPushButton("Restore Defaults")
+        reset.clicked.connect(lambda: [e.setKeySequence(QKeySequence(ACTIONS[a][1])) for a, e in self.edits.items()])
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>Keyboard Shortcuts</b>"))
+        layout.addWidget(hint)
+        layout.addLayout(form)
+        layout.addWidget(reset)
+        layout.addWidget(buttons)
+
+    def save(self):
+        chosen = {a: e.keySequence().toString(QKeySequence.PortableText) for a, e in self.edits.items()}
+        used = [s for s in chosen.values() if s]
+        if len(used) != len(set(used)):
+            QMessageBox.warning(self, "FloatShot", "Two actions have the same shortcut.")
+            return
+        for action, seq in chosen.items():
+            if seq and to_pynput(seq) is None:
+                QMessageBox.warning(self, "FloatShot", f"{seq} can't be used as a global shortcut.")
+                return
+            if seq and not any(m in seq for m in ("Ctrl", "Alt", "Meta")) and not seq.startswith("F"):
+                QMessageBox.warning(self, "FloatShot", f"{seq} needs Ctrl, Alt or Win (or a function key).")
+                return
+        for action, seq in chosen.items():
+            settings.setValue(f"shortcuts/{action}", seq)
+        self.on_save()
+        self.accept()
+
+
 class HotkeyBridge(QObject):
-    pressed = Signal()
+    pressed = Signal(str)
 
 
 class FloatShotApp:
@@ -337,17 +466,27 @@ class FloatShotApp:
         self.shots = set()
         self.recorder = None
         self.overlay = None
+        self.hotkeys = None
+        self.settings_dialog = None
 
         icon = QIcon(str(ASSETS / "icon.png"))
         app.setWindowIcon(icon)
         self.tray = QSystemTrayIcon(icon)
         self.tray.setToolTip("FloatShot")
         menu = QMenu()
-        menu.addAction("Capture Region  (Ctrl+Shift+2)", self.capture)
+        self.items = {"capture_region": menu.addAction("Capture Region", self.capture)}
         menu.addSeparator()
-        self.rec_screen = menu.addAction("Record Screen", lambda: self.start_recording(None))
-        self.rec_region = menu.addAction("Record Region", lambda: self.select(self.start_recording))
-        self.stop_action = menu.addAction("Stop Recording", self.stop_recording)
+        self.items["record_screen"] = menu.addAction("Record Screen", lambda: self.start_recording(None))
+        self.items["record_region"] = menu.addAction("Record Region", lambda: self.select(self.start_recording))
+        self.items["stop_recording"] = menu.addAction("Stop Recording", self.stop_recording)
+        self.rec_screen, self.rec_region, self.stop_action = (
+            self.items["record_screen"], self.items["record_region"], self.items["stop_recording"])
+        menu.addSeparator()
+        login = menu.addAction("Open at Login")
+        login.setCheckable(True)
+        login.setChecked(open_at_login_enabled())
+        login.toggled.connect(self.toggle_open_at_login)
+        menu.addAction("Settings…", self.show_settings)
         menu.addSeparator()
         menu.addAction(f"FloatShot {VERSION}").setEnabled(False)
         menu.addAction("Quit FloatShot", app.quit)
@@ -358,13 +497,49 @@ class FloatShotApp:
 
         # pynput's listener runs on its own thread; bounce presses to the Qt thread.
         self.bridge = HotkeyBridge()
-        self.bridge.pressed.connect(self.capture)
+        self.bridge.pressed.connect(self.perform)
+        self.apply_shortcuts()
+
+    def perform(self, action: str):
+        if action == "capture_region":
+            self.capture()
+        elif self.recorder is None and action == "record_screen":
+            self.start_recording(None)
+        elif self.recorder is None and action == "record_region":
+            self.select(self.start_recording)
+        elif action == "stop_recording":
+            self.stop_recording()
+
+    def apply_shortcuts(self):
+        """(Re)starts the global hotkey listener with the saved shortcuts."""
+        if self.hotkeys is not None:
+            self.hotkeys.stop()
+            self.hotkeys = None
+        mapping = {}
+        for action, item in self.items.items():
+            seq = shortcut_for(action)
+            item.setText(ACTIONS[action][0] + (f"  ({seq})" if seq else ""))
+            combo = to_pynput(seq)
+            if combo:
+                mapping[combo] = lambda a=action: self.bridge.pressed.emit(a)
+        if not mapping:
+            return
         try:
             from pynput import keyboard
-            self.hotkeys = keyboard.GlobalHotKeys({HOTKEY: self.bridge.pressed.emit})
+            self.hotkeys = keyboard.GlobalHotKeys(mapping)
             self.hotkeys.start()
         except Exception as exc:  # e.g. Wayland without X11 access
-            self.tray.showMessage("FloatShot", f"Global hotkey unavailable ({exc}). Use the tray menu.")
+            self.tray.showMessage("FloatShot", f"Global shortcuts unavailable ({exc}). Use the tray menu.")
+
+    def show_settings(self):
+        if self.hotkeys is not None:  # don't fire actions while the user types new combos
+            self.hotkeys.stop()
+            self.hotkeys = None
+        self.settings_dialog = SettingsDialog(on_save=lambda: None)
+        self.settings_dialog.finished.connect(lambda _: self.apply_shortcuts())
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
 
     def select(self, then):
         if self.overlay is not None:
@@ -404,6 +579,12 @@ class FloatShotApp:
         self.recorder = None
         self._update_recording_ui()
         self.tray.showMessage("FloatShot", f"Saved {path}")
+
+    def toggle_open_at_login(self, enabled: bool):
+        try:
+            set_open_at_login(enabled)
+        except OSError as exc:
+            QMessageBox.warning(None, "FloatShot", f"Couldn't change Open at Login: {exc}")
 
     def _update_recording_ui(self):
         recording = self.recorder is not None

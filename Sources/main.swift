@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Carbon.HIToolbox
 import ScreenCaptureKit
+import ServiceManagement
 import Vision
 
 // MARK: - App entry
@@ -16,24 +17,31 @@ app.run()
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var hotKeyRef: EventHotKeyRef?
     private var overlays: [SelectionWindow] = []
     var panels: [FloatingPanel] = []
     private var recorder: ScreenRecorder?
-    private var recordItems: [NSMenuItem] = []
-    private var stopItem: NSMenuItem!
+    private var recordingIndicator: RecordingIndicator?
+    private var actionItems: [HotkeyAction: NSMenuItem] = [:]
+    private var loginItem: NSMenuItem!
+    private var settingsWindow: SettingsWindowController?
+    private let hotkeys = HotkeyCenter()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(withTitle: "Capture Region  (⇧⌘2)", action: #selector(startCapture), keyEquivalent: "")
+        func add(_ action: HotkeyAction, _ selector: Selector) {
+            actionItems[action] = menu.addItem(withTitle: action.title, action: selector, keyEquivalent: "")
+        }
+        add(.captureRegion, #selector(startCapture))
         menu.addItem(.separator())
-        recordItems = [
-            menu.addItem(withTitle: "Record Screen", action: #selector(recordScreen), keyEquivalent: ""),
-            menu.addItem(withTitle: "Record Region", action: #selector(recordRegion), keyEquivalent: ""),
-        ]
-        stopItem = menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "")
+        add(.recordScreen, #selector(recordScreen))
+        add(.recordRegion, #selector(recordRegion))
+        add(.stopRecording, #selector(stopRecording))
+        menu.addItem(.separator())
+        loginItem = menu.addItem(withTitle: "Open at Login", action: #selector(toggleOpenAtLogin), keyEquivalent: "")
+        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(.separator())
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let versionItem = menu.addItem(withTitle: "FloatShot \(version)", action: nil, keyEquivalent: "")
@@ -43,20 +51,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         updateRecordingUI()
 
-        registerHotKey()
+        hotkeys.onPress = { [weak self] action in self?.perform(action) }
+        applyShortcuts()
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
     }
 
-    // Carbon hotkeys work globally without Accessibility permission and consume the keystroke.
-    private func registerHotKey() {
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
-            let me = Unmanaged<AppDelegate>.fromOpaque(userData!).takeUnretainedValue()
-            DispatchQueue.main.async { me.startCapture() }
-            return noErr
-        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
-        let id = EventHotKeyID(signature: OSType(0x464C5348), id: 1) // 'FLSH'
-        RegisterEventHotKey(UInt32(kVK_ANSI_2), UInt32(cmdKey | shiftKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
+    private func perform(_ action: HotkeyAction) {
+        switch action {
+        case .captureRegion: startCapture()
+        case .recordScreen: recordScreen()
+        case .recordRegion: recordRegion()
+        case .stopRecording: stopRecording()
+        }
+    }
+
+    /// Registers the saved shortcuts and shows them next to the menu items.
+    /// Returns the actions whose shortcut macOS refused (already taken by something else).
+    @discardableResult
+    func applyShortcuts() -> [HotkeyAction] {
+        let failed = hotkeys.register(ShortcutStore.all())
+        for (action, item) in actionItems {
+            let shortcut = ShortcutStore.shortcut(for: action)
+            item.keyEquivalent = shortcut?.menuKey ?? ""
+            item.keyEquivalentModifierMask = shortcut?.modifierFlags ?? []
+        }
+        return failed
+    }
+
+    func suspendShortcuts(_ suspended: Bool) {
+        if suspended { hotkeys.unregisterAll() } else { applyShortcuts() }
+    }
+
+    @objc private func showSettings() {
+        if settingsWindow == nil { settingsWindow = SettingsWindowController(app: self) }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.showWindow(nil)
+        settingsWindow?.window?.makeKeyAndOrderFront(nil)
     }
 
     private func hasPermission() -> Bool {
@@ -129,11 +159,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let recorder = ScreenRecorder()
         self.recorder = recorder
         updateRecordingUI()
+        let indicator = RecordingIndicator(region: rect ?? screen.frame, fullScreen: rect == nil, screen: screen)
+        indicator.onStop = { [weak self] in self?.stopRecording() }
+        recordingIndicator = indicator
         Task { @MainActor in
             do {
-                try await recorder.start(globalRect: rect, on: screen)
+                try await recorder.start(globalRect: rect, on: screen, excluding: indicator.windowNumbers)
+                indicator.startTimer()
             } catch {
                 self.recorder = nil
+                self.recordingIndicator?.close()
+                self.recordingIndicator = nil
                 self.updateRecordingUI()
                 NSAlert(error: error).runModal()
             }
@@ -143,6 +179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func stopRecording() {
         guard let recorder else { return }
         self.recorder = nil
+        recordingIndicator?.close()
+        recordingIndicator = nil
         updateRecordingUI()
         Task { @MainActor in
             do {
@@ -154,16 +192,344 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // Registers FloatShot as a login item, shown in System Settings → General → Login Items.
+    @objc private func toggleOpenAtLogin() {
+        let service = SMAppService.mainApp
+        do {
+            if service.status == .enabled {
+                try service.unregister()
+            } else {
+                try service.register()
+            }
+        } catch {
+            NSApp.activate(ignoringOtherApps: true)
+            NSAlert(error: error).runModal()
+        }
+        if service.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+        }
+        loginItem.state = service.status == .enabled ? .on : .off
+    }
+
     private func updateRecordingUI() {
         let recording = recorder != nil
-        recordItems.forEach { $0.isEnabled = !recording }
-        stopItem.isHidden = !recording
+        actionItems[.recordScreen]?.isEnabled = !recording
+        actionItems[.recordRegion]?.isEnabled = !recording
+        actionItems[.stopRecording]?.isHidden = !recording
         let symbol = recording ? "record.circle.fill" : "camera.viewfinder"
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "FloatShot")
         image?.isTemplate = !recording
         statusItem.button?.image = recording
             ? image?.withSymbolConfiguration(.init(paletteColors: [.systemRed]))
             : image
+    }
+}
+
+// MARK: - Shortcuts
+
+enum HotkeyAction: String, CaseIterable {
+    case captureRegion, recordScreen, recordRegion, stopRecording
+
+    var title: String {
+        switch self {
+        case .captureRegion: return "Capture Region"
+        case .recordScreen: return "Record Screen"
+        case .recordRegion: return "Record Region"
+        case .stopRecording: return "Stop Recording"
+        }
+    }
+
+    var defaultShortcut: Shortcut? {
+        self == .captureRegion ? Shortcut(keyCode: UInt32(kVK_ANSI_2), modifiers: UInt32(cmdKey | shiftKey), key: "2") : nil
+    }
+}
+
+struct Shortcut: Codable, Equatable {
+    var keyCode: UInt32
+    var modifiers: UInt32 // Carbon modifier mask
+    var key: String       // what the key types, for display
+
+    private static let namedKeys: [Int: String] = [
+        kVK_Return: "↩", kVK_Tab: "⇥", kVK_Space: "Space", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
+        kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
+        kVK_Home: "↖", kVK_End: "↘", kVK_PageUp: "⇞", kVK_PageDown: "⇟",
+        kVK_F1: "F1", kVK_F2: "F2", kVK_F3: "F3", kVK_F4: "F4", kVK_F5: "F5", kVK_F6: "F6",
+        kVK_F7: "F7", kVK_F8: "F8", kVK_F9: "F9", kVK_F10: "F10", kVK_F11: "F11", kVK_F12: "F12",
+        kVK_F13: "F13", kVK_F14: "F14", kVK_F15: "F15", kVK_F16: "F16", kVK_F17: "F17", kVK_F18: "F18", kVK_F19: "F19",
+    ]
+
+    /// Builds a shortcut from a key press. Needs ⌘, ⌃ or ⌥ unless it's a function key,
+    /// so plain typing never gets hijacked.
+    init?(event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var mods: UInt32 = 0
+        if flags.contains(.command) { mods |= UInt32(cmdKey) }
+        if flags.contains(.shift) { mods |= UInt32(shiftKey) }
+        if flags.contains(.option) { mods |= UInt32(optionKey) }
+        if flags.contains(.control) { mods |= UInt32(controlKey) }
+        let code = Int(event.keyCode)
+        let isFunctionKey = Shortcut.namedKeys[code]?.hasPrefix("F") == true
+        guard isFunctionKey || mods & UInt32(cmdKey | optionKey | controlKey) != 0 else { return nil }
+        let typed = Shortcut.namedKeys[code] ?? event.charactersIgnoringModifiers?.uppercased() ?? "?"
+        self.init(keyCode: UInt32(code), modifiers: mods, key: typed)
+    }
+
+    init(keyCode: UInt32, modifiers: UInt32, key: String) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        self.key = key
+    }
+
+    var modifierFlags: NSEvent.ModifierFlags {
+        var f: NSEvent.ModifierFlags = []
+        if modifiers & UInt32(controlKey) != 0 { f.insert(.control) }
+        if modifiers & UInt32(optionKey) != 0 { f.insert(.option) }
+        if modifiers & UInt32(shiftKey) != 0 { f.insert(.shift) }
+        if modifiers & UInt32(cmdKey) != 0 { f.insert(.command) }
+        return f
+    }
+
+    var display: String {
+        var s = ""
+        if modifiers & UInt32(controlKey) != 0 { s += "⌃" }
+        if modifiers & UInt32(optionKey) != 0 { s += "⌥" }
+        if modifiers & UInt32(shiftKey) != 0 { s += "⇧" }
+        if modifiers & UInt32(cmdKey) != 0 { s += "⌘" }
+        return s + key
+    }
+
+    // Menus can only show single-character keys; named keys are left off the menu.
+    var menuKey: String { key.count == 1 ? key.lowercased() : "" }
+}
+
+/// Saved shortcuts in UserDefaults. A missing entry means "use the default";
+/// an explicitly cleared one is stored as an empty value.
+enum ShortcutStore {
+    private static func defaultsKey(_ action: HotkeyAction) -> String { "shortcut.\(action.rawValue)" }
+
+    static func shortcut(for action: HotkeyAction) -> Shortcut? {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey(action)) else { return action.defaultShortcut }
+        return try? JSONDecoder().decode(Shortcut.self, from: data)
+    }
+
+    static func set(_ shortcut: Shortcut?, for action: HotkeyAction) {
+        let data = shortcut.flatMap { try? JSONEncoder().encode($0) } ?? Data()
+        UserDefaults.standard.set(data, forKey: defaultsKey(action))
+    }
+
+    static func resetAll() {
+        HotkeyAction.allCases.forEach { UserDefaults.standard.removeObject(forKey: defaultsKey($0)) }
+    }
+
+    static func all() -> [HotkeyAction: Shortcut] {
+        var result: [HotkeyAction: Shortcut] = [:]
+        for action in HotkeyAction.allCases { result[action] = shortcut(for: action) }
+        return result
+    }
+}
+
+/// Global hotkeys via Carbon: they work without Accessibility permission and consume the keystroke.
+final class HotkeyCenter {
+    var onPress: ((HotkeyAction) -> Void)?
+    private var refs: [EventHotKeyRef] = []
+    private var handlerInstalled = false
+
+    @discardableResult
+    func register(_ shortcuts: [HotkeyAction: Shortcut]) -> [HotkeyAction] {
+        installHandler()
+        unregisterAll()
+        var failed: [HotkeyAction] = []
+        for (index, action) in HotkeyAction.allCases.enumerated() {
+            guard let s = shortcuts[action] else { continue }
+            var ref: EventHotKeyRef?
+            let id = EventHotKeyID(signature: OSType(0x464C5348), id: UInt32(index)) // 'FLSH'
+            if RegisterEventHotKey(s.keyCode, s.modifiers, id, GetApplicationEventTarget(), 0, &ref) == noErr, let ref {
+                refs.append(ref)
+            } else {
+                failed.append(action)
+            }
+        }
+        return failed
+    }
+
+    func unregisterAll() {
+        refs.forEach { UnregisterEventHotKey($0) }
+        refs.removeAll()
+    }
+
+    private func installHandler() {
+        guard !handlerInstalled else { return }
+        handlerInstalled = true
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
+            var id = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                              nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+            let me = Unmanaged<HotkeyCenter>.fromOpaque(userData!).takeUnretainedValue()
+            let actions = HotkeyAction.allCases
+            if Int(id.id) < actions.count {
+                DispatchQueue.main.async { me.onPress?(actions[Int(id.id)]) }
+            }
+            return noErr
+        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
+    }
+}
+
+// MARK: - Settings window
+
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    private weak var app: AppDelegate?
+    private var fields: [HotkeyAction: ShortcutField] = [:]
+    private let status = NSTextField(labelWithString: "")
+
+    init(app: AppDelegate) {
+        self.app = app
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 260),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "FloatShot Settings"
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        super.init(window: window)
+        window.delegate = self
+        buildUI()
+        window.center()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func buildUI() {
+        let header = NSTextField(labelWithString: "Keyboard Shortcuts")
+        header.font = .boldSystemFont(ofSize: 13)
+        let hint = NSTextField(wrappingLabelWithString: "Click a shortcut, then press the new key combination. Use ⌘, ⌃ or ⌥ (or a function key). Press ⌫ to clear, Esc to cancel.")
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+
+        let grid = NSGridView()
+        grid.rowSpacing = 8
+        grid.columnSpacing = 12
+        for action in HotkeyAction.allCases {
+            let field = ShortcutField(shortcut: ShortcutStore.shortcut(for: action))
+            field.onRecordingChanged = { [weak self] recording in self?.app?.suspendShortcuts(recording) }
+            field.onChange = { [weak self] shortcut in self?.update(action, to: shortcut) }
+            fields[action] = field
+            let clear = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Clear")!,
+                                 target: field, action: #selector(ShortcutField.clear))
+            clear.isBordered = false
+            clear.contentTintColor = .tertiaryLabelColor
+            clear.toolTip = "Remove shortcut"
+            grid.addRow(with: [NSTextField(labelWithString: action.title + ":"), field, clear])
+        }
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).width = 180
+
+        let reset = NSButton(title: "Restore Defaults", target: self, action: #selector(restoreDefaults))
+        status.font = .systemFont(ofSize: 11)
+        status.textColor = .systemRed
+
+        let stack = NSStackView(views: [header, hint, grid, status, reset])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        hint.preferredMaxLayoutWidth = 400
+        window?.contentView = stack
+        window?.setContentSize(stack.fittingSize)
+    }
+
+    private func update(_ action: HotkeyAction, to shortcut: Shortcut?) {
+        // One combination can only belong to one action.
+        if let shortcut {
+            for other in HotkeyAction.allCases where other != action && ShortcutStore.shortcut(for: other) == shortcut {
+                ShortcutStore.set(nil, for: other)
+                fields[other]?.shortcut = nil
+            }
+        }
+        ShortcutStore.set(shortcut, for: action)
+        refresh()
+    }
+
+    private func refresh() {
+        let failed = app?.applyShortcuts() ?? []
+        status.stringValue = failed.isEmpty ? ""
+            : "Already used by macOS or another app: " + failed.map(\.title).joined(separator: ", ")
+        window?.setContentSize(window?.contentView?.fittingSize ?? .zero)
+    }
+
+    @objc private func restoreDefaults() {
+        ShortcutStore.resetAll()
+        for (action, field) in fields { field.shortcut = ShortcutStore.shortcut(for: action) }
+        refresh()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        fields.values.forEach { $0.stopRecording() }
+    }
+}
+
+/// A button that records the next key combination pressed while it's focused.
+final class ShortcutField: NSButton {
+    var onChange: ((Shortcut?) -> Void)?
+    var onRecordingChanged: ((Bool) -> Void)?
+    var shortcut: Shortcut? { didSet { updateTitle() } }
+    private var recording = false { didSet { updateTitle(); onRecordingChanged?(recording) } }
+
+    init(shortcut: Shortcut?) {
+        self.shortcut = shortcut
+        super.init(frame: NSRect(x: 0, y: 0, width: 180, height: 24))
+        bezelStyle = .rounded
+        setButtonType(.momentaryPushIn)
+        target = self
+        action = #selector(beginRecording)
+        updateTitle()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    private func updateTitle() {
+        title = recording ? "Type shortcut…" : (shortcut?.display ?? "None")
+    }
+
+    @objc private func beginRecording() {
+        recording = true
+        window?.makeFirstResponder(self)
+    }
+
+    func stopRecording() {
+        if recording { recording = false }
+    }
+
+    @objc func clear() {
+        stopRecording()
+        shortcut = nil
+        onChange?(nil)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        stopRecording()
+        return super.resignFirstResponder()
+    }
+
+    // ⌘-combinations arrive here rather than in keyDown.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard recording else { return super.performKeyEquivalent(with: event) }
+        handle(event)
+        return true
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard recording else { return super.keyDown(with: event) }
+        handle(event)
+    }
+
+    private func handle(_ event: NSEvent) {
+        let plain = event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
+        if plain && event.keyCode == UInt16(kVK_Escape) { stopRecording(); return }
+        if plain && (event.keyCode == UInt16(kVK_Delete) || event.keyCode == UInt16(kVK_ForwardDelete)) { clear(); return }
+        guard let s = Shortcut(event: event) else { NSSound.beep(); return }
+        shortcut = s
+        stopRecording()
+        onChange?(s)
     }
 }
 
@@ -284,11 +650,13 @@ final class ScreenRecorder: NSObject, SCStreamOutput {
     private(set) var url: URL!
 
     // Records the whole screen when globalRect is nil, otherwise just that region.
-    func start(globalRect: CGRect?, on screen: NSScreen) async throws {
+    func start(globalRect: CGRect?, on screen: NSScreen, excluding windowNumbers: [Int] = []) async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw RecordError.noDisplay }
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Keep the recording frame and badge out of the video.
+        let hidden = content.windows.filter { windowNumbers.contains(Int($0.windowID)) }
+        let filter = SCContentFilter(display: display, excludingWindows: hidden)
 
         let scale = screen.backingScaleFactor
         let config = SCStreamConfiguration()
@@ -352,6 +720,112 @@ final class ScreenRecorder: NSObject, SCStreamOutput {
             sessionStarted = true
         }
         if input.isReadyForMoreMediaData { input.append(buffer) }
+    }
+}
+
+// MARK: - Recording indicator
+
+/// A red frame with corner marks around what's being recorded, plus a badge
+/// showing elapsed time that stops the recording when clicked.
+final class RecordingIndicator {
+    var onStop: (() -> Void)?
+    private let frameWindow: NSWindow
+    private let badgeWindow: NSPanel
+    private let timeLabel = NSTextField(labelWithString: "REC 0:00")
+    private var timer: Timer?
+    private var started = Date()
+
+    var windowNumbers: [Int] { [frameWindow.windowNumber, badgeWindow.windowNumber] }
+
+    init(region: CGRect, fullScreen: Bool, screen: NSScreen) {
+        // A region frame sits just outside the area so it never covers recorded pixels.
+        let pad: CGFloat = 4
+        let frameRect = fullScreen ? screen.frame : region.insetBy(dx: -pad, dy: -pad)
+        frameWindow = NSWindow(contentRect: frameRect, styleMask: .borderless, backing: .buffered, defer: false)
+        frameWindow.isOpaque = false
+        frameWindow.backgroundColor = .clear
+        frameWindow.ignoresMouseEvents = true
+        frameWindow.hasShadow = false
+        frameWindow.level = .screenSaver
+        frameWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        frameWindow.contentView = RecordingFrameView(frame: NSRect(origin: .zero, size: frameRect.size))
+        frameWindow.orderFrontRegardless()
+
+        // Badge: above the region's top-right corner, or inside it when there's no room.
+        let size = NSSize(width: 118, height: 28)
+        var origin = NSPoint(x: frameRect.maxX - size.width, y: frameRect.maxY + 6)
+        if fullScreen || origin.y + size.height > screen.visibleFrame.maxY {
+            origin = NSPoint(x: frameRect.maxX - size.width - 12, y: min(frameRect.maxY, screen.visibleFrame.maxY) - size.height - 12)
+        }
+        origin.x = max(origin.x, screen.frame.minX + 8)
+        badgeWindow = NSPanel(contentRect: NSRect(origin: origin, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        badgeWindow.isOpaque = false
+        badgeWindow.backgroundColor = .clear
+        badgeWindow.level = .screenSaver
+        badgeWindow.hidesOnDeactivate = false
+        badgeWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+        let badge = NSButton(title: "", target: nil, action: nil)
+        badge.isBordered = false
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.systemRed.cgColor
+        badge.layer?.cornerRadius = size.height / 2
+        badge.frame = NSRect(origin: .zero, size: size)
+        badge.toolTip = "Click to stop recording"
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        timeLabel.textColor = .white
+        timeLabel.alignment = .center
+        timeLabel.frame = NSRect(x: 0, y: 6, width: size.width, height: 16)
+        badge.addSubview(timeLabel)
+        badgeWindow.contentView = badge
+        badgeWindow.orderFrontRegardless()
+
+        badge.target = self
+        badge.action = #selector(stopClicked)
+    }
+
+    func startTimer() {
+        started = Date()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        tick()
+    }
+
+    private func tick() {
+        let s = Int(Date().timeIntervalSince(started))
+        timeLabel.stringValue = String(format: "■  REC %d:%02d", s / 60, s % 60)
+    }
+
+    @objc private func stopClicked() { onStop?() }
+
+    func close() {
+        timer?.invalidate()
+        frameWindow.orderOut(nil)
+        badgeWindow.orderOut(nil)
+    }
+}
+
+final class RecordingFrameView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds.insetBy(dx: 1.5, dy: 1.5)
+        NSColor.systemRed.withAlphaComponent(0.85).setStroke()
+        let border = NSBezierPath(rect: r)
+        border.lineWidth = 3
+        border.setLineDash([10, 6], count: 2, phase: 0)
+        border.stroke()
+
+        // Solid corner marks so the edges are easy to spot.
+        let len = min(28, r.width / 3, r.height / 3)
+        let corners = NSBezierPath()
+        corners.lineWidth = 5
+        corners.lineCapStyle = .round
+        for (p, dx, dy) in [(NSPoint(x: r.minX, y: r.minY), 1.0, 1.0), (NSPoint(x: r.maxX, y: r.minY), -1.0, 1.0),
+                            (NSPoint(x: r.minX, y: r.maxY), 1.0, -1.0), (NSPoint(x: r.maxX, y: r.maxY), -1.0, -1.0)] {
+            corners.move(to: NSPoint(x: p.x + len * dx, y: p.y))
+            corners.line(to: p)
+            corners.line(to: NSPoint(x: p.x, y: p.y + len * dy))
+        }
+        NSColor.systemRed.setStroke()
+        corners.stroke()
     }
 }
 
