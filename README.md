@@ -54,7 +54,9 @@ brew uninstall --cask floatshot
 
 ### Windows 10/11
 
-Download `FloatShot-windows-x64.zip`, unzip it, and run `FloatShot\FloatShot.exe`. If SmartScreen warns, click **More info → Run anyway**. FloatShot lives in the system tray.
+Download **`FloatShot-windows-x64.exe`** and double-click it. That's the whole app in one file, nothing to install. If SmartScreen warns, click **More info → Run anyway**. FloatShot lives in the system tray.
+
+Prefer faster startup? Download `FloatShot-windows-x64.zip` instead, unzip it, and run `FloatShot\FloatShot.exe`.
 
 For OCR, install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) and make sure it's on your PATH.
 

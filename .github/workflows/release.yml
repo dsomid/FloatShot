@@ -46,6 +46,19 @@ jobs:
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: cd dist && 7z a "../${{ matrix.asset }}" FloatShot
+      # A single portable .exe as well: slower to start (it unpacks itself) but nothing to unzip.
+      - name: Build single-file EXE (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name FloatShot-windows-x64
+          --icon icon.png --add-data "icon.png;." --distpath exe
+          floatshot.py
+      - name: Upload EXE (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" exe/FloatShot-windows-x64.exe --clobber
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: tar -czf "${{ matrix.asset }}" -C dist FloatShot
