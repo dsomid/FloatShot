@@ -21,9 +21,22 @@ A tiny macOS menu-bar app for floating screenshots. Press **⇧⌘2**, drag over
 
 ## Install
 
-Download the DMG from [Releases](../../releases), open it, and drag FloatShot to Applications.
+With [Homebrew](https://brew.sh):
 
-FloatShot isn't notarized by Apple, so on first launch right-click the app and choose **Open**. After granting Screen Recording permission, quit FloatShot from the menu bar and open it again.
+```bash
+brew install --cask dsomid/tap/floatshot
+```
+
+Or download the DMG from [Releases](../../releases), open it, and drag FloatShot to Applications.
+
+FloatShot isn't notarized by Apple, so macOS blocks the first launch. Open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. (On macOS 14 you can instead right-click the app and choose **Open**.) After granting Screen Recording permission, quit FloatShot from the menu bar and open it again.
+
+To update or remove it later:
+
+```bash
+brew upgrade --cask floatshot
+brew uninstall --cask floatshot
+```
 
 ## Build from source
 
