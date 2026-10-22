@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog, QDialogButto
                                QLabel, QMenu, QMessageBox, QPlainTextEdit, QSystemTrayIcon,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 
 
@@ -59,6 +59,18 @@ def ocr(image: QImage) -> str:
 
 # MARK: - Region selection overlay
 
+def draw_red_frame(p: QPainter, r: QRect):
+    """Red dashed outline with solid corner marks, matching the macOS app."""
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(220, 38, 38, 220), 3, Qt.DashLine))
+    p.drawRect(r)
+    n = min(28, r.width() // 3, r.height() // 3)
+    p.setPen(QPen(QColor(220, 38, 38), 5, Qt.SolidLine, Qt.RoundCap))
+    for corner, dx, dy in ((r.topLeft(), 1, 1), (r.topRight(), -1, 1),
+                           (r.bottomLeft(), 1, -1), (r.bottomRight(), -1, -1)):
+        p.drawLine(corner, corner + QPoint(n * dx, 0))
+        p.drawLine(corner, corner + QPoint(0, n * dy))
+
 class SelectionOverlay(QWidget):
     finished = Signal(object)  # QRect in global logical coords, or None
 
@@ -86,9 +98,13 @@ class SelectionOverlay(QWidget):
             p.setCompositionMode(QPainter.CompositionMode_Clear)
             p.fillRect(sel, Qt.transparent)
             p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-            p.setPen(QPen(Qt.white, 1))
-            p.drawRect(sel)
-            p.drawText(sel.bottomLeft() + QPoint(4, 16), f"{sel.width()} × {sel.height()}")
+            draw_red_frame(p, sel.adjusted(-3, -3, 3, 3))
+            label = f" {sel.width()} × {sel.height()} "
+            box = p.fontMetrics().boundingRect(label).adjusted(-2, -2, 2, 2)
+            box.moveTopLeft(sel.bottomLeft() + QPoint(0, 8))
+            p.fillRect(box, QColor(220, 38, 38))
+            p.setPen(Qt.white)
+            p.drawText(box, Qt.AlignCenter, label)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
@@ -214,6 +230,11 @@ class FloatingShot(QWidget):
             b.clicked.connect(fn)
             bar.addWidget(b)
         bar.addStretch()
+        close = QToolButton(text="✕")
+        close.setToolTip("Delete this screenshot")
+        close.setStyleSheet("QToolButton { color: #dc2626; font-weight: bold; }")
+        close.clicked.connect(self.delete)
+        bar.addWidget(close)
 
         self.ocr_box = QPlainTextEdit()
         self.ocr_box.setFixedWidth(260)

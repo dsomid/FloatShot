@@ -2,6 +2,14 @@
 
 All notable changes to FloatShot. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.7.0] - 2026-10-22
+
+### Added
+- **✕ delete button** on every screenshot's toolbar, alongside right-click → Delete.
+
+### Changed
+- **Red selection frame.** Dragging to capture a region now shows the same red dashed frame with corner marks as recording, with the size in a red label.
+
 ## [1.6.0] - 2026-10-22
 
 ### Added
@@ -33,6 +41,7 @@ First public release.
 - Right-click menu: Copy Text from Image, AirDrop Text from Image, AirDrop Image, Delete. Delete is the only way a shot is removed.
 - App icon, version shown in the menu bar, and install via Homebrew (`dsomid/tap/floatshot`).
 
+[1.7.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.7.0
 [1.6.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.6.0
 [1.3.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.3.0
 [1.1.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.1.0

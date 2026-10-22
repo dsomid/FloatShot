@@ -31,7 +31,7 @@
 | Custom shortcut for every action | ✅ | ✅ |
 | Open at Login | ✅ | ✅ |
 
-Shots stay put until you right-click and choose **Delete**. Change any shortcut in **Settings…** from the menu-bar (or tray) icon.
+Shots stay put until you click the red **✕** or right-click and choose **Delete**. Change any shortcut in **Settings…** from the menu-bar (or tray) icon.
 
 ## Install
 

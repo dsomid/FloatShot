@@ -586,13 +586,12 @@ final class SelectionView: NSView {
         guard let sel = selection else { return }
         NSColor.clear.setFill()
         sel.fill(using: .copy)
-        NSColor.white.setStroke()
-        let path = NSBezierPath(rect: sel.insetBy(dx: -0.5, dy: -0.5))
-        path.lineWidth = 1
-        path.stroke()
-        let label = "\(Int(sel.width)) × \(Int(sel.height))" as NSString
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white]
-        label.draw(at: NSPoint(x: sel.minX + 4, y: max(sel.minY - 16, 2)), withAttributes: attrs)
+        // Same red frame as recording, drawn just outside the area being captured.
+        RecordingFrameView.drawFrame(in: sel.insetBy(dx: -3, dy: -3))
+        let label = " \(Int(sel.width)) × \(Int(sel.height)) " as NSString
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+                                                    .foregroundColor: NSColor.white, .backgroundColor: NSColor.systemRed]
+        label.draw(at: NSPoint(x: sel.minX, y: max(sel.minY - 22, 2)), withAttributes: attrs)
     }
 }
 
@@ -806,7 +805,11 @@ final class RecordingIndicator {
 
 final class RecordingFrameView: NSView {
     override func draw(_ dirtyRect: NSRect) {
-        let r = bounds.insetBy(dx: 1.5, dy: 1.5)
+        Self.drawFrame(in: bounds.insetBy(dx: 1.5, dy: 1.5))
+    }
+
+    /// Red dashed outline with solid corner marks, shared by region selection and recording.
+    static func drawFrame(in r: NSRect) {
         NSColor.systemRed.withAlphaComponent(0.85).setStroke()
         let border = NSBezierPath(rect: r)
         border.lineWidth = 3
@@ -1013,6 +1016,9 @@ final class FloatingPanel: NSPanel {
         bar.addArrangedSubview(NSView()) // spacer
         bar.addArrangedSubview(button("text.viewfinder", "Extract text (OCR)", #selector(toggleOCR)))
         bar.addArrangedSubview(button("doc.on.doc", "Copy image with notes", #selector(copyImage)))
+        let close = button("xmark.circle.fill", "Delete this screenshot", #selector(deleteShot))
+        close.contentTintColor = .systemRed
+        bar.addArrangedSubview(close)
         root.addSubview(bar)
 
         ocrText.isEditable = true
