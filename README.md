@@ -24,8 +24,11 @@ A tiny macOS menu-bar app for floating screenshots. Press **⇧⌘2**, drag over
 With [Homebrew](https://brew.sh):
 
 ```bash
+brew tap dsomid/tap && brew trust dsomid/tap
 brew install --cask dsomid/tap/floatshot
 ```
+
+Homebrew only loads casks from third-party taps you've trusted, hence `brew trust`.
 
 Or download the DMG from [Releases](../../releases), open it, and drag FloatShot to Applications.
 
