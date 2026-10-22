@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Carbon.HIToolbox
 import ScreenCaptureKit
 import Vision
@@ -18,12 +19,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyRef: EventHotKeyRef?
     private var overlays: [SelectionWindow] = []
     var panels: [FloatingPanel] = []
+    private var recorder: ScreenRecorder?
+    private var recordItems: [NSMenuItem] = []
+    private var stopItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "FloatShot")
         let menu = NSMenu()
+        menu.autoenablesItems = false
         menu.addItem(withTitle: "Capture Region  (⇧⌘2)", action: #selector(startCapture), keyEquivalent: "")
+        menu.addItem(.separator())
+        recordItems = [
+            menu.addItem(withTitle: "Record Screen", action: #selector(recordScreen), keyEquivalent: ""),
+            menu.addItem(withTitle: "Record Region", action: #selector(recordRegion), keyEquivalent: ""),
+        ]
+        stopItem = menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "")
         menu.addItem(.separator())
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let versionItem = menu.addItem(withTitle: "FloatShot \(version)", action: nil, keyEquivalent: "")
@@ -31,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Quit FloatShot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.items.forEach { if $0.action != #selector(NSApplication.terminate(_:)) { $0.target = self } }
         statusItem.menu = menu
+        updateRecordingUI()
 
         registerHotKey()
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
@@ -48,20 +59,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RegisterEventHotKey(UInt32(kVK_ANSI_2), UInt32(cmdKey | shiftKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
     }
 
-    @objc func startCapture() {
-        guard overlays.isEmpty else { return }
-        guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
-            let alert = NSAlert()
-            alert.messageText = "Screen Recording permission needed"
-            alert.informativeText = "Enable FloatShot in System Settings → Privacy & Security → Screen & System Audio Recording, then relaunch FloatShot."
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-            return
-        }
+    private func hasPermission() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        CGRequestScreenCaptureAccess()
+        let alert = NSAlert()
+        alert.messageText = "Screen Recording permission needed"
+        alert.informativeText = "Enable FloatShot in System Settings → Privacy & Security → Screen & System Audio Recording, then relaunch FloatShot."
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+        return false
+    }
+
+    // Shows the drag-to-select overlay on every screen and reports the chosen rect.
+    private func selectRegion(_ completion: @escaping (CGRect, NSScreen) -> Void) {
+        guard overlays.isEmpty, hasPermission() else { return }
         overlays = NSScreen.screens.map { screen in
             let w = SelectionWindow(screen: screen)
-            w.onFinish = { [weak self] rect in self?.finishSelection(rect: rect, screen: screen) }
+            w.onFinish = { [weak self] rect in
+                guard let self else { return }
+                self.overlays.forEach { $0.orderOut(nil) }
+                self.overlays.removeAll()
+                NSCursor.pop()
+                guard let rect, rect.width > 3, rect.height > 3 else { return }
+                // Give the window server a beat to remove the overlays.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { completion(rect, screen) }
+            }
             w.makeKeyAndOrderFront(nil)
             return w
         }
@@ -69,15 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSCursor.crosshair.push()
     }
 
-    private func finishSelection(rect: CGRect?, screen: NSScreen) {
-        overlays.forEach { $0.orderOut(nil) }
-        overlays.removeAll()
-        NSCursor.pop()
-        guard let rect, rect.width > 3, rect.height > 3 else { return }
-        // Give the window server a beat to remove the overlays before capturing.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            Task { await self.capture(rect: rect, screen: screen) }
-        }
+    @objc func startCapture() {
+        guard recorder == nil else { return }
+        selectRegion { rect, screen in Task { await self.capture(rect: rect, screen: screen) } }
     }
 
     @MainActor
@@ -93,6 +109,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let alert = NSAlert(error: error)
             alert.runModal()
         }
+    }
+
+    // MARK: Recording
+
+    @objc private func recordScreen() {
+        guard recorder == nil, hasPermission() else { return }
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main!
+        startRecording(rect: nil, screen: screen)
+    }
+
+    @objc private func recordRegion() {
+        guard recorder == nil else { return }
+        selectRegion { rect, screen in self.startRecording(rect: rect, screen: screen) }
+    }
+
+    private func startRecording(rect: CGRect?, screen: NSScreen) {
+        let recorder = ScreenRecorder()
+        self.recorder = recorder
+        updateRecordingUI()
+        Task { @MainActor in
+            do {
+                try await recorder.start(globalRect: rect, on: screen)
+            } catch {
+                self.recorder = nil
+                self.updateRecordingUI()
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    @objc private func stopRecording() {
+        guard let recorder else { return }
+        self.recorder = nil
+        updateRecordingUI()
+        Task { @MainActor in
+            do {
+                let url = try await recorder.stop()
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    private func updateRecordingUI() {
+        let recording = recorder != nil
+        recordItems.forEach { $0.isEnabled = !recording }
+        stopItem.isHidden = !recording
+        let symbol = recording ? "record.circle.fill" : "camera.viewfinder"
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "FloatShot")
+        image?.isTemplate = !recording
+        statusItem.button?.image = recording
+            ? image?.withSymbolConfiguration(.init(paletteColors: [.systemRed]))
+            : image
     }
 }
 
@@ -192,6 +263,98 @@ enum ScreenCapturer {
     }
 }
 
+// MARK: - Screen recording
+
+final class ScreenRecorder: NSObject, SCStreamOutput {
+    enum RecordError: LocalizedError {
+        case noDisplay, noFrames
+        var errorDescription: String? {
+            switch self {
+            case .noDisplay: return "Could not find the display to record."
+            case .noFrames: return "The recording didn't capture any frames."
+            }
+        }
+    }
+
+    private var stream: SCStream?
+    private var writer: AVAssetWriter?
+    private var input: AVAssetWriterInput?
+    private var sessionStarted = false
+    private let queue = DispatchQueue(label: "FloatShot.recorder")
+    private(set) var url: URL!
+
+    // Records the whole screen when globalRect is nil, otherwise just that region.
+    func start(globalRect: CGRect?, on screen: NSScreen) async throws {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else { throw RecordError.noDisplay }
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+
+        let scale = screen.backingScaleFactor
+        let config = SCStreamConfiguration()
+        var size = screen.frame.size
+        if let rect = globalRect {
+            let local = rect.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
+            config.sourceRect = CGRect(x: local.minX, y: screen.frame.height - local.maxY, width: local.width, height: local.height)
+            size = rect.size
+        }
+        // H.264 needs even dimensions.
+        let width = Int(size.width * scale) & ~1, height = Int(size.height * scale) & ~1
+        config.width = width
+        config.height = height
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.showsCursor = true
+        config.queueDepth = 6
+
+        let movies = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        url = movies.appendingPathComponent("FloatShot Recording \(stamp.string(from: Date())).mov")
+
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height,
+        ])
+        input.expectsMediaDataInRealTime = true
+        writer.add(input)
+        writer.startWriting()
+        self.writer = writer
+        self.input = input
+
+        let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        try await stream.startCapture()
+        self.stream = stream
+    }
+
+    func stop() async throws -> URL {
+        try? await stream?.stopCapture()
+        stream = nil
+        guard let writer, let input else { throw RecordError.noFrames }
+        // Drain any frames still being appended on the capture queue.
+        let started = queue.sync { sessionStarted }
+        guard started else { writer.cancelWriting(); throw RecordError.noFrames }
+        input.markAsFinished()
+        await writer.finishWriting()
+        if let error = writer.error { throw error }
+        return url
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen, buffer.isValid, let writer, let input else { return }
+        // Skip idle/blank frames; only complete frames carry new pixels.
+        guard let info = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+              let raw = info.first?[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete else { return }
+        if !sessionStarted {
+            writer.startSession(atSourceTime: buffer.presentationTimeStamp)
+            sessionStarted = true
+        }
+        if input.isReadyForMoreMediaData { input.append(buffer) }
+    }
+}
+
 // MARK: - OCR
 
 enum OCR {
@@ -264,6 +427,7 @@ final class FloatingPanel: NSPanel {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let items: [(String, String, Selector)] = [
+            ("Copy Image", "doc.on.doc", #selector(copyImage)),
             ("Copy Text from Image", "doc.on.clipboard", #selector(copyTextFromImage)),
             ("AirDrop Text from Image", "text.bubble", #selector(airDropText)),
             ("AirDrop Image", "photo", #selector(sendViaAirDrop)),
