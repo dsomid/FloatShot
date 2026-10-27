@@ -2,6 +2,11 @@
 
 All notable changes to FloatShot. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.8.1] - 2026-10-28
+
+### Added
+- **⌘Z / Ctrl+Z undo** on screenshots: removes the last arrow, circle, square, drawing or note, one step at a time. While typing in a note it undoes the typing instead.
+
 ## [1.8.0] - 2026-10-28
 
 ### Added
@@ -52,6 +57,7 @@ First public release.
 - Right-click menu: Copy Text from Image, AirDrop Text from Image, AirDrop Image, Delete. Delete is the only way a shot is removed.
 - App icon, version shown in the menu bar, and install via Homebrew (`dsomid/tap/floatshot`).
 
+[1.8.1]: https://github.com/dsomid/FloatShot/releases/tag/v1.8.1
 [1.8.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.8.0
 [1.7.1]: https://github.com/dsomid/FloatShot/releases/tag/v1.7.1
 [1.7.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.7.0

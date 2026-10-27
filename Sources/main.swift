@@ -890,6 +890,17 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
 
     override var canBecomeKey: Bool { true }
 
+    // ⌘Z removes the last drawing, shape or note. While typing in a note, ⌘Z undoes typing instead.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let editingNote = firstResponder is NSText
+        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "z", !editingNote {
+            shotView.undo()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     // Resizing keeps the screenshot's proportions so it always fills the window.
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         let side = ocrScroll.isHidden ? 0 : ocrWidth
@@ -1029,7 +1040,7 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
 
         bar.addArrangedSubview(modes)
         bar.addArrangedSubview(color)
-        bar.addArrangedSubview(button("arrow.uturn.backward", "Undo", #selector(undo)))
+        bar.addArrangedSubview(button("arrow.uturn.backward", "Undo (⌘Z)", #selector(undo)))
         bar.addArrangedSubview(NSView()) // spacer
         bar.addArrangedSubview(button("text.viewfinder", "Extract text (OCR)", #selector(toggleOCR)))
         bar.addArrangedSubview(button("doc.on.doc", "Copy image with notes", #selector(copyImage)))

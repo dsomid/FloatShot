@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog, QDialogButto
                                QLabel, QMenu, QMessageBox, QPlainTextEdit, QSystemTrayIcon,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 
 
@@ -295,7 +295,9 @@ class FloatingShot(QWidget):
         menu.exec(e.globalPos())
 
     def keyPressEvent(self, e):
-        pass  # Esc and friends must not close the shot
+        # Ctrl+Z removes the last drawing, shape or note; Esc and friends must not close the shot.
+        if e.matches(QKeySequence.Undo):
+            self.canvas.undo()
 
     def closeEvent(self, e):
         if getattr(self, "_deleting", False):
