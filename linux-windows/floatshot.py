@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog, QDialogButto
                                QLabel, QMenu, QMessageBox, QPlainTextEdit, QSystemTrayIcon,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "1.7.1"
+VERSION = "1.8.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 
 
@@ -147,6 +147,7 @@ class Canvas(QWidget):
         self.color = QColor("red")
         self.items = []  # ("stroke", QPainterPath, QColor) | ("note", QPoint, str, QColor)
         self.current = None
+        self.shape_start = None
         self.drag_origin = None
         size = image.deviceIndependentSize().toSize()
         self.setFixedSize(size)
@@ -182,6 +183,8 @@ class Canvas(QWidget):
             self.drag_origin = e.globalPosition().toPoint() - self.window().pos()
         elif self.mode == "draw":
             self.current = QPainterPath(pos)
+        elif self.mode in ("arrow", "circle", "square"):
+            self.shape_start = e.position()
         else:
             text, ok = QInputDialog.getText(self, "FloatShot", "Note:")
             if ok and text:
@@ -191,12 +194,41 @@ class Canvas(QWidget):
     def mouseMoveEvent(self, e):
         if self.mode == "move" and self.drag_origin is not None:
             self.window().move(e.globalPosition().toPoint() - self.drag_origin)
+        elif self.shape_start is not None:
+            self.current = self.shape_path(self.shape_start, e.position(), bool(e.modifiers() & Qt.ShiftModifier))
+            self.update()
         elif self.current is not None:
             self.current.lineTo(e.position())
             self.update()
 
+    def shape_path(self, a, b, square: bool) -> QPainterPath:
+        """Arrow, circle or square between two points; Shift makes a perfect circle/square."""
+        import math
+        path = QPainterPath(a)
+        if self.mode == "arrow":
+            path.lineTo(b)
+            angle = math.atan2(b.y() - a.y(), b.x() - a.x())
+            head = min(18, math.hypot(b.x() - a.x(), b.y() - a.y()) / 2)
+            for side in (math.pi * 5 / 6, -math.pi * 5 / 6):
+                path.moveTo(b)
+                path.lineTo(b.x() + head * math.cos(angle + side), b.y() + head * math.sin(angle + side))
+            return path
+        w, h = b.x() - a.x(), b.y() - a.y()
+        if square:
+            side = max(abs(w), abs(h))
+            w, h = math.copysign(side, w), math.copysign(side, h)
+        from PySide6.QtCore import QRectF
+        rect = QRectF(a.x(), a.y(), w, h).normalized()
+        path = QPainterPath()
+        if self.mode == "circle":
+            path.addEllipse(rect)
+        else:
+            path.addRect(rect)
+        return path
+
     def mouseReleaseEvent(self, _):
         self.drag_origin = None
+        self.shape_start = None
         if self.current is not None:
             self.items.append(("stroke", self.current, QColor(self.color)))
             self.current = None
@@ -220,7 +252,8 @@ class FloatingShot(QWidget):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
-        for label, mode in (("✋ Move", "move"), ("✏️ Draw", "draw"), ("T Text", "text")):
+        for label, mode in (("✋ Move", "move"), ("✏️ Draw", "draw"), ("↗ Arrow", "arrow"),
+                            ("◯ Circle", "circle"), ("▢ Square", "square"), ("T Text", "text")):
             b = QToolButton(text=label, checkable=True, autoExclusive=True)
             b.setChecked(mode == "move")
             b.clicked.connect(lambda _, m=mode: setattr(self.canvas, "mode", m))

@@ -21,7 +21,7 @@
 | --- | :---: | :---: |
 | Region capture hotkey | ⇧⌘2 | Ctrl+Shift+2 |
 | Floating always-on-top shots | ✅ | ✅ |
-| Draw and type notes, with undo | ✅ | ✅ |
+| Draw, arrows, circles, squares and typed notes, with undo | ✅ | ✅ |
 | OCR (text from image) | ✅ Apple Vision | ✅ Tesseract |
 | Right-click: Copy Image, Copy Text, Delete | ✅ | ✅ |
 | Right-click: AirDrop text or image | ✅ | — |

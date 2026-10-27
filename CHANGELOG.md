@@ -2,6 +2,11 @@
 
 All notable changes to FloatShot. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.8.0] - 2026-10-28
+
+### Added
+- **Arrow, Circle and Square tools** in the screenshot toolbar, next to Draw. Drag to place them; hold Shift for a perfect circle or square. They use the selected color and work with Undo.
+
 ## [1.7.1] - 2026-10-28
 
 ### Fixed
@@ -47,6 +52,7 @@ First public release.
 - Right-click menu: Copy Text from Image, AirDrop Text from Image, AirDrop Image, Delete. Delete is the only way a shot is removed.
 - App icon, version shown in the menu bar, and install via Homebrew (`dsomid/tap/floatshot`).
 
+[1.8.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.8.0
 [1.7.1]: https://github.com/dsomid/FloatShot/releases/tag/v1.7.1
 [1.7.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.7.0
 [1.6.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.6.0
