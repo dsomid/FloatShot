@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog, QDialogButto
                                QLabel, QMenu, QMessageBox, QPlainTextEdit, QSystemTrayIcon,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 
 

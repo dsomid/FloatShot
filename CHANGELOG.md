@@ -2,6 +2,12 @@
 
 All notable changes to FloatShot. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.7.1] - 2026-10-28
+
+### Fixed
+- **Re-capturing a pinned screenshot** now captures what you see, including the pinned shot, instead of what's underneath it. (macOS)
+- **Resizing a screenshot** keeps its proportions, so the image always fills the window with no grey or black area; drawings and notes scale with it. (macOS)
+
 ## [1.7.0] - 2026-10-22
 
 ### Added
@@ -41,6 +47,7 @@ First public release.
 - Right-click menu: Copy Text from Image, AirDrop Text from Image, AirDrop Image, Delete. Delete is the only way a shot is removed.
 - App icon, version shown in the menu bar, and install via Homebrew (`dsomid/tap/floatshot`).
 
+[1.7.1]: https://github.com/dsomid/FloatShot/releases/tag/v1.7.1
 [1.7.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.7.0
 [1.6.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.6.0
 [1.3.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.3.0

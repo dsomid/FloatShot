@@ -609,9 +609,8 @@ enum ScreenCapturer {
         guard let display = content.displays.first(where: { $0.displayID == displayID }) ?? content.displays.first else {
             throw CaptureError.noDisplay
         }
-        // Exclude our own windows (other floating shots) from the capture.
-        let mine = content.applications.filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }
-        let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
+        // Capture exactly what's on screen, including pinned screenshots, so a shot can be re-captured.
+        let filter = SCContentFilter(display: display, excludingWindows: [])
 
         // sourceRect is in display points with a top-left origin.
         let local = globalRect.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
@@ -854,7 +853,7 @@ enum OCR {
 
 // MARK: - Floating panel
 
-final class FloatingPanel: NSPanel {
+final class FloatingPanel: NSPanel, NSWindowDelegate {
     var onClose: (() -> Void)?
     private let shotView: ShotView
     private let ocrScroll = NSScrollView()
@@ -864,13 +863,16 @@ final class FloatingPanel: NSPanel {
     private let toolbarHeight: CGFloat = 34
     private let ocrWidth: CGFloat = 260
     private var imageSize: NSSize
+    private static let minImageWidth: CGFloat = 300
 
     init(image: CGImage, scale: CGFloat, origin: CGPoint) {
         self.image = image
-        var size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        size.width = max(size.width, 300) // keep room for the toolbar
+        let natural = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+        // Small captures are shown a little larger so the toolbar fits; the aspect ratio never changes.
+        let grow = max(1, FloatingPanel.minImageWidth / natural.width)
+        let size = NSSize(width: natural.width * grow, height: natural.height * grow)
         imageSize = size
-        shotView = ShotView(image: NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)))
+        shotView = ShotView(image: NSImage(cgImage: image, size: natural))
 
         let frame = NSRect(x: origin.x, y: origin.y - toolbarHeight, width: size.width, height: size.height + toolbarHeight)
         super.init(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: false)
@@ -882,10 +884,19 @@ final class FloatingPanel: NSPanel {
         hasShadow = true
         backgroundColor = .windowBackgroundColor
         isReleasedWhenClosed = false
+        delegate = self
         buildUI()
     }
 
     override var canBecomeKey: Bool { true }
+
+    // Resizing keeps the screenshot's proportions so it always fills the window.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        let side = ocrScroll.isHidden ? 0 : ocrWidth
+        let imageWidth = max(frameSize.width - side, FloatingPanel.minImageWidth)
+        let aspect = shotView.imageAspect
+        return NSSize(width: imageWidth + side, height: (imageWidth / aspect).rounded() + toolbarHeight)
+    }
 
     // The only way a shot goes away is "Delete" from the right-click menu.
     private var allowClose = false
@@ -1029,6 +1040,9 @@ final class FloatingPanel: NSPanel {
         ocrScroll.documentView = ocrText
         ocrScroll.hasVerticalScroller = true
         ocrScroll.isHidden = true
+        // Give the hidden panel a real height; at zero, autoresizing can't shrink it and blocks
+        // the window from getting shorter.
+        ocrScroll.frame = NSRect(x: imageSize.width, y: 0, width: ocrWidth, height: imageSize.height + toolbarHeight)
         ocrScroll.autoresizingMask = [.minXMargin, .height]
         root.addSubview(ocrScroll)
 
@@ -1098,9 +1112,18 @@ final class ShotView: NSView {
     private var items: [Item] = []
     private var currentPath: NSBezierPath?
 
+    var imageAspect: CGFloat { image.size.width / image.size.height }
+
     init(image: NSImage) {
         self.image = image
         super.init(frame: .zero)
+    }
+
+    // The view always works in the image's own coordinates, so when the window is resized
+    // the screenshot, drawings and notes all scale together.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        setBoundsSize(image.size)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -1116,7 +1139,7 @@ final class ShotView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        image.draw(in: NSRect(origin: .zero, size: image.size).fitting(in: bounds))
+        image.draw(in: bounds)
         for case let .stroke(path, color) in items { color.setStroke(); path.stroke() }
         if let currentPath { inkColor.setStroke(); currentPath.stroke() }
     }
@@ -1172,14 +1195,5 @@ final class ShotView: NSView {
         guard let last = items.popLast() else { return }
         if case let .note(field) = last { field.removeFromSuperview() }
         needsDisplay = true
-    }
-}
-
-private extension NSRect {
-    // Draws the image at its natural size anchored top-left, scaled down only if the view is smaller.
-    func fitting(in container: NSRect) -> NSRect {
-        let s = min(1, container.width / width, container.height / height)
-        let w = width * s, h = height * s
-        return NSRect(x: container.minX, y: container.maxY - h, width: w, height: h)
     }
 }
