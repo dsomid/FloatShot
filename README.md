@@ -21,11 +21,11 @@
 | --- | :---: | :---: |
 | Region capture hotkey | ⇧⌘2 | Ctrl+Shift+2 |
 | Floating always-on-top shots | ✅ | ✅ |
-| Draw, arrows, circles, squares and typed notes, with undo | ✅ | ✅ |
+| Draw, highlight, arrows, circles, squares, blur and typed notes, with undo (⌘Z / Ctrl+Z) | ✅ | ✅ |
 | OCR (text from image) | ✅ Apple Vision | ✅ Tesseract |
 | Right-click: Copy Image, Copy Text, Delete | ✅ | ✅ |
 | Right-click: AirDrop text or image | ✅ | — |
-| Right-click: Save Image | — | ✅ |
+| Right-click: Save Image | ✅ | ✅ |
 | Record screen / record region | ✅ `.mov` | ✅ `.mp4` |
 | Recording frame + click-to-stop timer | ✅ | — |
 | Custom shortcut for every action | ✅ | ✅ |

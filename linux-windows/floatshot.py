@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog, QDialogButto
                                QLabel, QMenu, QMessageBox, QPlainTextEdit, QSystemTrayIcon,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "1.8.1"
+VERSION = "1.9.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 
 
@@ -145,7 +145,8 @@ class Canvas(QWidget):
         self.image = image
         self.mode = "move"
         self.color = QColor("red")
-        self.items = []  # ("stroke", QPainterPath, QColor) | ("note", QPoint, str, QColor)
+        self.items = []  # ("stroke", QPainterPath, QColor, width) | ("blur", QRectF) | ("note", QPoint, str, QColor)
+        self._pixelated = None
         self.current = None
         self.shape_start = None
         self.drag_origin = None
@@ -160,12 +161,44 @@ class Canvas(QWidget):
         p.end()
         return out
 
+    HIGHLIGHT = QColor(250, 204, 21, 100)
+
+    def pen_color(self):
+        return self.HIGHLIGHT if self.mode == "highlight" else self.color
+
+    def pen_width(self):
+        return 18 if self.mode == "highlight" else 3
+
+    def pixelated(self) -> QImage:
+        """A blocky copy of the screenshot used to hide blurred areas."""
+        if self._pixelated is None:
+            w, h = self.image.width(), self.image.height()
+            small = self.image.scaled(max(1, w // 12), max(1, h // 12), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            self._pixelated = small.scaled(w, h, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+            self._pixelated.setDevicePixelRatio(self.image.devicePixelRatio())
+        return self._pixelated
+
     def _paint(self, p: QPainter):
         p.setRenderHint(QPainter.Antialiasing)
         p.drawImage(0, 0, self.image)
-        for item in self.items + ([("stroke", self.current, self.color)] if self.current else []):
+        for item in self.items:
+            if item[0] == "blur":
+                p.save()
+                p.setClipRect(item[1])
+                p.drawImage(0, 0, self.pixelated())
+                p.restore()
+        preview = []
+        if self.current is not None:
+            if self.mode == "blur":
+                p.setPen(QPen(QColor(120, 120, 120), 1.5, Qt.DashLine))
+                p.drawPath(self.current)
+            else:
+                preview = [("stroke", self.current, self.pen_color(), self.pen_width())]
+        for item in self.items + preview:
+            if item[0] == "blur":
+                continue
             if item[0] == "stroke":
-                p.setPen(QPen(item[2], 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                p.setPen(QPen(item[2], item[3], Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
                 p.drawPath(item[1])
             else:
                 p.setPen(item[3])
@@ -181,9 +214,9 @@ class Canvas(QWidget):
         pos = e.position().toPoint()
         if self.mode == "move":
             self.drag_origin = e.globalPosition().toPoint() - self.window().pos()
-        elif self.mode == "draw":
+        elif self.mode in ("draw", "highlight"):
             self.current = QPainterPath(pos)
-        elif self.mode in ("arrow", "circle", "square"):
+        elif self.mode in ("arrow", "circle", "square", "blur"):
             self.shape_start = e.position()
         else:
             text, ok = QInputDialog.getText(self, "FloatShot", "Note:")
@@ -230,7 +263,10 @@ class Canvas(QWidget):
         self.drag_origin = None
         self.shape_start = None
         if self.current is not None:
-            self.items.append(("stroke", self.current, QColor(self.color)))
+            if self.mode == "blur":
+                self.items.append(("blur", self.current.boundingRect()))
+            else:
+                self.items.append(("stroke", self.current, QColor(self.pen_color()), self.pen_width()))
             self.current = None
             self.update()
 
@@ -252,8 +288,9 @@ class FloatingShot(QWidget):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
-        for label, mode in (("✋ Move", "move"), ("✏️ Draw", "draw"), ("↗ Arrow", "arrow"),
-                            ("◯ Circle", "circle"), ("▢ Square", "square"), ("T Text", "text")):
+        for label, mode in (("✋ Move", "move"), ("✏️ Draw", "draw"), ("🖍 Highlight", "highlight"),
+                            ("↗ Arrow", "arrow"), ("◯ Circle", "circle"), ("▢ Square", "square"),
+                            ("▦ Blur", "blur"), ("T Text", "text")):
             b = QToolButton(text=label, checkable=True, autoExclusive=True)
             b.setChecked(mode == "move")
             b.clicked.connect(lambda _, m=mode: setattr(self.canvas, "mode", m))

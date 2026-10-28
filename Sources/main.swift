@@ -3,6 +3,7 @@ import AVFoundation
 import Carbon.HIToolbox
 import ScreenCaptureKit
 import ServiceManagement
+import UniformTypeIdentifiers
 import Vision
 
 // MARK: - App entry
@@ -863,7 +864,7 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
     private let toolbarHeight: CGFloat = 34
     private let ocrWidth: CGFloat = 260
     private var imageSize: NSSize
-    private static let minImageWidth: CGFloat = 380
+    private static let minImageWidth: CGFloat = 440
 
     init(image: CGImage, scale: CGFloat, origin: CGPoint) {
         self.image = image
@@ -930,6 +931,7 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
             ("Copy Text from Image", "doc.on.clipboard", #selector(copyTextFromImage)),
             ("AirDrop Text from Image", "text.bubble", #selector(airDropText)),
             ("AirDrop Image", "photo", #selector(sendViaAirDrop)),
+            ("Save Image…", "square.and.arrow.down", #selector(saveImage)),
         ]
         for (title, symbol, action) in items {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
@@ -995,6 +997,21 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
         service.perform(withItems: [url])
     }
 
+    @objc private func saveImage() {
+        guard let png = annotatedImage()?.representation(using: .png, properties: [:]) else { return }
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let save = NSSavePanel()
+        save.allowedContentTypes = [.png]
+        save.nameFieldStringValue = "FloatShot \(stamp.string(from: Date())).png"
+        save.directoryURL = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+        save.level = .floating + 1
+        NSApp.activate(ignoringOtherApps: true)
+        if save.runModal() == .OK, let url = save.url {
+            do { try png.write(to: url) } catch { NSAlert(error: error).runModal() }
+        }
+    }
+
     private func annotatedImage() -> NSBitmapImageRep? {
         guard let rep = shotView.bitmapImageRepForCachingDisplay(in: shotView.bounds) else { return nil }
         shotView.cacheDisplay(in: shotView.bounds, to: rep)
@@ -1019,18 +1036,22 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
         let modes = NSSegmentedControl(images: [
             NSImage(systemSymbolName: "hand.raised", accessibilityDescription: "Move")!,
             NSImage(systemSymbolName: "pencil.tip", accessibilityDescription: "Draw")!,
+            NSImage(systemSymbolName: "highlighter", accessibilityDescription: "Highlight")!,
             NSImage(systemSymbolName: "arrow.up.right", accessibilityDescription: "Arrow")!,
             NSImage(systemSymbolName: "circle", accessibilityDescription: "Circle")!,
             NSImage(systemSymbolName: "square", accessibilityDescription: "Square")!,
+            NSImage(systemSymbolName: "checkerboard.rectangle", accessibilityDescription: "Blur")!,
             NSImage(systemSymbolName: "textformat", accessibilityDescription: "Text")!,
         ], trackingMode: .selectOne, target: self, action: #selector(modeChanged(_:)))
         modes.selectedSegment = 0
         modes.setToolTip("Move window", forSegment: 0)
         modes.setToolTip("Draw", forSegment: 1)
-        modes.setToolTip("Arrow (drag from tail to tip)", forSegment: 2)
-        modes.setToolTip("Circle (drag to size)", forSegment: 3)
-        modes.setToolTip("Square (drag to size)", forSegment: 4)
-        modes.setToolTip("Type a note (click to place)", forSegment: 5)
+        modes.setToolTip("Highlighter", forSegment: 2)
+        modes.setToolTip("Arrow (drag from tail to tip)", forSegment: 3)
+        modes.setToolTip("Circle (drag to size)", forSegment: 4)
+        modes.setToolTip("Square (drag to size)", forSegment: 5)
+        modes.setToolTip("Blur (drag over what to hide)", forSegment: 6)
+        modes.setToolTip("Type a note (click to place)", forSegment: 7)
         modes.controlSize = .small
 
         let color = NSColorWell(style: .minimal)
@@ -1076,7 +1097,7 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
     }
 
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
-        shotView.mode = [.move, .draw, .arrow, .oval, .rectangle, .text][sender.selectedSegment]
+        shotView.mode = [.move, .draw, .highlight, .arrow, .oval, .rectangle, .blur, .text][sender.selectedSegment]
     }
     @objc private func colorChanged(_ sender: NSColorWell) { shotView.inkColor = sender.color }
     @objc private func undo() { shotView.undo() }
@@ -1120,8 +1141,9 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
 // MARK: - Image + annotation view
 
 final class ShotView: NSView {
-    enum Mode { case move, draw, arrow, oval, rectangle, text }
-    private enum Item { case stroke(NSBezierPath, NSColor), note(NSTextField) }
+    enum Mode { case move, draw, highlight, arrow, oval, rectangle, blur, text }
+    private enum Item { case stroke(NSBezierPath, NSColor), blur(NSRect), note(NSTextField) }
+    private static let highlightColor = NSColor.systemYellow.withAlphaComponent(0.4)
 
     var mode: Mode = .move { didSet { window?.invalidateCursorRects(for: self) } }
     var inkColor: NSColor = .systemRed
@@ -1129,6 +1151,18 @@ final class ShotView: NSView {
     private var items: [Item] = []
     private var currentPath: NSBezierPath?
     private var shapeStart: NSPoint?
+    private var currentColor: NSColor { mode == .highlight ? Self.highlightColor : inkColor }
+
+    // A low-resolution copy of the screenshot; drawn without smoothing it looks pixelated.
+    private lazy var pixelated: NSImage = {
+        let block: CGFloat = 12
+        let small = NSSize(width: max(1, (image.size.width / block).rounded()), height: max(1, (image.size.height / block).rounded()))
+        let out = NSImage(size: small)
+        out.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: small))
+        out.unlockFocus()
+        return out
+    }()
 
     // Arrow, circle or square between two points. Shift makes a perfect circle/square.
     private func shapePath(from a: NSPoint, to b: NSPoint, shift: Bool) -> NSBezierPath {
@@ -1177,15 +1211,32 @@ final class ShotView: NSView {
     override func resetCursorRects() {
         switch mode {
         case .move: addCursorRect(bounds, cursor: .openHand)
-        case .draw, .arrow, .oval, .rectangle: addCursorRect(bounds, cursor: .crosshair)
+        case .draw, .highlight, .arrow, .oval, .rectangle, .blur: addCursorRect(bounds, cursor: .crosshair)
         case .text: addCursorRect(bounds, cursor: .iBeam)
         }
     }
 
     override func draw(_ dirtyRect: NSRect) {
         image.draw(in: bounds)
+        // Blurred areas show a coarse pixelated copy of the screenshot, clipped to each rect.
+        for case let .blur(rect) in items {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: rect).addClip()
+            NSGraphicsContext.current?.imageInterpolation = .none
+            pixelated.draw(in: bounds)
+            NSGraphicsContext.restoreGraphicsState()
+        }
         for case let .stroke(path, color) in items { color.setStroke(); path.stroke() }
-        if let currentPath { inkColor.setStroke(); currentPath.stroke() }
+        if let currentPath {
+            if mode == .blur {
+                NSColor.secondaryLabelColor.setStroke()
+                currentPath.setLineDash([6, 4], count: 2, phase: 0)
+                currentPath.lineWidth = 1.5
+            } else {
+                currentColor.setStroke()
+            }
+            currentPath.stroke()
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1193,14 +1244,14 @@ final class ShotView: NSView {
         switch mode {
         case .move:
             window?.performDrag(with: event)
-        case .draw:
+        case .draw, .highlight:
             let path = NSBezierPath()
-            path.lineWidth = 3
+            path.lineWidth = mode == .highlight ? 18 : 3
             path.lineCapStyle = .round
             path.lineJoinStyle = .round
             path.move(to: p)
             currentPath = path
-        case .arrow, .oval, .rectangle:
+        case .arrow, .oval, .rectangle, .blur:
             shapeStart = p
             currentPath = nil
         case .text:
@@ -1210,8 +1261,10 @@ final class ShotView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if mode == .draw, let path = currentPath {
+        if mode == .draw || mode == .highlight, let path = currentPath {
             path.line(to: p)
+        } else if mode == .blur, let start = shapeStart {
+            currentPath = NSBezierPath(rect: NSRect(x: min(start.x, p.x), y: min(start.y, p.y), width: abs(p.x - start.x), height: abs(p.y - start.y)))
         } else if let start = shapeStart {
             currentPath = shapePath(from: start, to: p, shift: event.modifierFlags.contains(.shift))
         }
@@ -1221,7 +1274,7 @@ final class ShotView: NSView {
     override func mouseUp(with event: NSEvent) {
         shapeStart = nil
         guard mode != .move, mode != .text, let path = currentPath else { return }
-        items.append(.stroke(path, inkColor))
+        items.append(mode == .blur ? .blur(path.bounds) : .stroke(path, currentColor))
         currentPath = nil
         needsDisplay = true
     }
