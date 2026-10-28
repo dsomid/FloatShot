@@ -23,6 +23,8 @@
 | Floating always-on-top shots | ✅ | ✅ |
 | Draw, highlight, arrows, circles, squares, blur and typed notes, with undo (⌘Z / Ctrl+Z) | ✅ | ✅ |
 | OCR (text from image) | ✅ Apple Vision | ✅ Tesseract |
+| Select text on the screenshot | ✅ Live Text | ✅ drag a box |
+| Move by dragging the toolbar | ✅ | ✅ |
 | Right-click: Copy Image, Copy Text, Delete | ✅ | ✅ |
 | Right-click: AirDrop text or image | ✅ | — |
 | Right-click: Save Image | ✅ | ✅ |

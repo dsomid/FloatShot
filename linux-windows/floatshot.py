@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog, QDialogButto
                                QLabel, QMenu, QMessageBox, QPlainTextEdit, QSystemTrayIcon,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "1.9.0"
+VERSION = "1.10.1"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
 
 
@@ -189,7 +189,7 @@ class Canvas(QWidget):
                 p.restore()
         preview = []
         if self.current is not None:
-            if self.mode == "blur":
+            if self.mode in ("blur", "select"):
                 p.setPen(QPen(QColor(120, 120, 120), 1.5, Qt.DashLine))
                 p.drawPath(self.current)
             else:
@@ -216,7 +216,7 @@ class Canvas(QWidget):
             self.drag_origin = e.globalPosition().toPoint() - self.window().pos()
         elif self.mode in ("draw", "highlight"):
             self.current = QPainterPath(pos)
-        elif self.mode in ("arrow", "circle", "square", "blur"):
+        elif self.mode in ("arrow", "circle", "square", "blur", "select"):
             self.shape_start = e.position()
         else:
             text, ok = QInputDialog.getText(self, "FloatShot", "Note:")
@@ -263,12 +263,37 @@ class Canvas(QWidget):
         self.drag_origin = None
         self.shape_start = None
         if self.current is not None:
+            if self.mode == "select":
+                self.copy_text_in(self.current.boundingRect())
+                self.current = None
+                self.update()
+                return
             if self.mode == "blur":
                 self.items.append(("blur", self.current.boundingRect()))
             else:
                 self.items.append(("stroke", self.current, QColor(self.pen_color()), self.pen_width()))
             self.current = None
             self.update()
+
+    def copy_text_in(self, rect):
+        """OCRs just the dragged area and copies the text."""
+        from PySide6.QtWidgets import QToolTip
+        ratio = self.image.devicePixelRatio()
+        crop = self.image.copy(QRect(int(rect.x() * ratio), int(rect.y() * ratio),
+                                     int(rect.width() * ratio), int(rect.height() * ratio)))
+        if crop.isNull() or crop.width() < 4 or crop.height() < 4:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            text = ocr(crop)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if text and not text.startswith(("Tesseract isn't", "OCR needs")):
+            QGuiApplication.clipboard().setText(text)
+            msg = "Copied: " + (text if len(text) < 60 else text[:57] + "…")
+        else:
+            msg = text or "No text found there"
+        QToolTip.showText(QCursor.pos(), msg, self)
 
     def undo(self):
         if self.items:
@@ -290,7 +315,7 @@ class FloatingShot(QWidget):
         bar.setContentsMargins(6, 4, 6, 4)
         for label, mode in (("✋ Move", "move"), ("✏️ Draw", "draw"), ("🖍 Highlight", "highlight"),
                             ("↗ Arrow", "arrow"), ("◯ Circle", "circle"), ("▢ Square", "square"),
-                            ("▦ Blur", "blur"), ("T Text", "text")):
+                            ("▦ Blur", "blur"), ("T Text", "text"), ("⌶ Select Text", "select")):
             b = QToolButton(text=label, checkable=True, autoExclusive=True)
             b.setChecked(mode == "move")
             b.clicked.connect(lambda _, m=mode: setattr(self.canvas, "mode", m))
@@ -330,6 +355,18 @@ class FloatingShot(QWidget):
         menu.addSeparator()
         menu.addAction("Delete", self.delete)
         menu.exec(e.globalPos())
+
+    # Dragging an empty part of the toolbar moves the window.
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_from = e.globalPosition().toPoint() - self.pos()
+
+    def mouseMoveEvent(self, e):
+        if getattr(self, "_drag_from", None) is not None:
+            self.move(e.globalPosition().toPoint() - self._drag_from)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_from = None
 
     def keyPressEvent(self, e):
         # Ctrl+Z removes the last drawing, shape or note; Esc and friends must not close the shot.

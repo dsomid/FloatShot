@@ -5,6 +5,7 @@ import ScreenCaptureKit
 import ServiceManagement
 import UniformTypeIdentifiers
 import Vision
+import VisionKit
 
 // MARK: - App entry
 
@@ -857,6 +858,10 @@ enum OCR {
 final class FloatingPanel: NSPanel, NSWindowDelegate {
     var onClose: (() -> Void)?
     private let shotView: ShotView
+    private let bar = ToolbarView()
+    // Live Text: lets the user select and copy text directly on the screenshot.
+    private let textOverlay = ImageAnalysisOverlayView()
+    private var textAnalysis: ImageAnalysis?
     private let ocrScroll = NSScrollView()
     private let ocrText = NSTextView()
     private let image: CGImage
@@ -864,7 +869,7 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
     private let toolbarHeight: CGFloat = 34
     private let ocrWidth: CGFloat = 260
     private var imageSize: NSSize
-    private static let minImageWidth: CGFloat = 440
+    private static let minImageWidth: CGFloat = 470
 
     init(image: CGImage, scale: CGFloat, origin: CGPoint) {
         self.image = image
@@ -899,7 +904,28 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
             shotView.undo()
             return true
         }
+        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "c", !textOverlay.isHidden,
+           !textOverlay.selectedText.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(textOverlay.selectedText, forType: .string)
+            return true
+        }
         return super.performKeyEquivalent(with: event)
+    }
+
+    func windowDidResize(_ notification: Notification) { layoutContent() }
+
+    /// Toolbar across the top, screenshot below it, and the OCR text panel (when open) to the
+    /// right of the screenshot, under the toolbar so it never covers its buttons.
+    private func layoutContent() {
+        guard let root = contentView else { return }
+        let size = root.bounds.size
+        let side = ocrScroll.isHidden ? 0 : ocrWidth
+        let imageHeight = size.height - toolbarHeight
+        bar.frame = NSRect(x: 0, y: imageHeight, width: size.width, height: toolbarHeight)
+        shotView.frame = NSRect(x: 0, y: 0, width: size.width - side, height: imageHeight)
+        textOverlay.frame = shotView.frame
+        ocrScroll.frame = NSRect(x: size.width - side, y: 0, width: ocrWidth, height: imageHeight)
     }
 
     // Resizing keeps the screenshot's proportions so it always fills the window.
@@ -1023,15 +1049,17 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
         root.autoresizingMask = [.width, .height]
 
         shotView.frame = NSRect(x: 0, y: 0, width: imageSize.width, height: imageSize.height)
-        shotView.autoresizingMask = [.width, .height]
         root.addSubview(shotView)
 
-        let bar = NSStackView()
+        textOverlay.isHidden = true
+        textOverlay.preferredInteractionTypes = .textSelection
+        textOverlay.frame = shotView.frame
+        root.addSubview(textOverlay, positioned: .above, relativeTo: shotView)
+
         bar.orientation = .horizontal
         bar.spacing = 6
         bar.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         bar.frame = NSRect(x: 0, y: imageSize.height, width: imageSize.width, height: toolbarHeight)
-        bar.autoresizingMask = [.width, .minYMargin]
 
         let modes = NSSegmentedControl(images: [
             NSImage(systemSymbolName: "hand.raised", accessibilityDescription: "Move")!,
@@ -1042,6 +1070,7 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
             NSImage(systemSymbolName: "square", accessibilityDescription: "Square")!,
             NSImage(systemSymbolName: "checkerboard.rectangle", accessibilityDescription: "Blur")!,
             NSImage(systemSymbolName: "textformat", accessibilityDescription: "Text")!,
+            NSImage(systemSymbolName: "character.cursor.ibeam", accessibilityDescription: "Select Text")!,
         ], trackingMode: .selectOne, target: self, action: #selector(modeChanged(_:)))
         modes.selectedSegment = 0
         modes.setToolTip("Move window", forSegment: 0)
@@ -1052,6 +1081,7 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
         modes.setToolTip("Square (drag to size)", forSegment: 5)
         modes.setToolTip("Blur (drag over what to hide)", forSegment: 6)
         modes.setToolTip("Type a note (click to place)", forSegment: 7)
+        modes.setToolTip("Select text in the screenshot, then ⌘C to copy", forSegment: 8)
         modes.controlSize = .small
 
         let color = NSColorWell(style: .minimal)
@@ -1080,11 +1110,10 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
         ocrScroll.isHidden = true
         // Give the hidden panel a real height; at zero, autoresizing can't shrink it and blocks
         // the window from getting shorter.
-        ocrScroll.frame = NSRect(x: imageSize.width, y: 0, width: ocrWidth, height: imageSize.height + toolbarHeight)
-        ocrScroll.autoresizingMask = [.minXMargin, .height]
         root.addSubview(ocrScroll)
 
         contentView = root
+        layoutContent()
         shotView.window?.makeFirstResponder(shotView)
     }
 
@@ -1097,8 +1126,29 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
     }
 
     @objc private func modeChanged(_ sender: NSSegmentedControl) {
-        shotView.mode = [.move, .draw, .highlight, .arrow, .oval, .rectangle, .blur, .text][sender.selectedSegment]
+        let selectingText = sender.selectedSegment == 8
+        textOverlay.isHidden = !selectingText
+        if selectingText {
+            makeKey()
+            analyzeText()
+        } else {
+            shotView.mode = [.move, .draw, .highlight, .arrow, .oval, .rectangle, .blur, .text][sender.selectedSegment]
+        }
     }
+    private func analyzeText() {
+        guard textAnalysis == nil else { return }
+        Task { @MainActor in
+            do {
+                let analysis = try await ImageAnalyzer().analyze(image, orientation: .up,
+                                                                 configuration: ImageAnalyzer.Configuration([.text]))
+                textAnalysis = analysis
+                textOverlay.analysis = analysis
+            } catch {
+                NSSound.beep()
+            }
+        }
+    }
+
     @objc private func colorChanged(_ sender: NSColorWell) { shotView.inkColor = sender.color }
     @objc private func undo() { shotView.undo() }
 
@@ -1113,18 +1163,12 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
     @objc private func toggleOCR() {
         let showing = !ocrScroll.isHidden
         var f = frame
-        if showing {
-            ocrScroll.isHidden = true
-            f.size.width -= ocrWidth
-            setFrame(f, display: true, animate: true)
-            return
-        }
-        f.size.width += ocrWidth
-        // Keep the image where it is; grow to the right.
+        // Keep the image where it is; the window grows or shrinks on the right.
+        ocrScroll.isHidden = showing
+        f.size.width += showing ? -ocrWidth : ocrWidth
         setFrame(f, display: true, animate: true)
-        shotView.frame.size.width = f.width - ocrWidth
-        ocrScroll.frame = NSRect(x: f.width - ocrWidth, y: 0, width: ocrWidth, height: f.height)
-        ocrScroll.isHidden = false
+        layoutContent()
+        if showing { return }
         ocrText.frame = NSRect(origin: .zero, size: ocrScroll.contentSize)
         if let ocrResult {
             ocrText.string = ocrResult
@@ -1136,6 +1180,12 @@ final class FloatingPanel: NSPanel, NSWindowDelegate {
             }
         }
     }
+}
+
+/// The screenshot's toolbar: dragging any empty part of it moves the window.
+final class ToolbarView: NSStackView {
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
 }
 
 // MARK: - Image + annotation view

@@ -8,7 +8,7 @@ rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 for arch in arm64 x86_64; do
   swiftc -O -swift-version 5 -target $arch-apple-macos14.0 \
-    -framework AppKit -framework ScreenCaptureKit -framework Vision -framework Carbon -framework AVFoundation -framework CoreMedia -framework ServiceManagement \
+    -framework AppKit -framework ScreenCaptureKit -framework Vision -framework Carbon -framework AVFoundation -framework CoreMedia -framework ServiceManagement -framework VisionKit \
     Sources/main.swift -o build/FloatShot-$arch
 done
 lipo -create build/FloatShot-arm64 build/FloatShot-x86_64 -output "$APP/Contents/MacOS/FloatShot"

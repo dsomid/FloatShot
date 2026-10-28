@@ -2,6 +2,15 @@
 
 All notable changes to FloatShot. Versions follow [Semantic Versioning](https://semver.org).
 
+## [1.10.1] - 2026-10-28
+
+### Added
+- **Select Text tool.** On macOS it uses Live Text: drag across words on the screenshot and press ⌘C (or right-click → Copy). On Windows/Linux, drag a box over text and it's copied straight away.
+- **Drag the toolbar to move a screenshot**, in addition to Move mode.
+
+### Fixed
+- Opening the OCR text panel no longer hides the toolbar's OCR, Copy and ✕ buttons; the panel now sits below the toolbar. (macOS)
+
 ## [1.9.0] - 2026-10-28
 
 ### Added
@@ -64,6 +73,7 @@ First public release.
 - Right-click menu: Copy Text from Image, AirDrop Text from Image, AirDrop Image, Delete. Delete is the only way a shot is removed.
 - App icon, version shown in the menu bar, and install via Homebrew (`dsomid/tap/floatshot`).
 
+[1.10.1]: https://github.com/dsomid/FloatShot/releases/tag/v1.10.1
 [1.9.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.9.0
 [1.8.1]: https://github.com/dsomid/FloatShot/releases/tag/v1.8.1
 [1.8.0]: https://github.com/dsomid/FloatShot/releases/tag/v1.8.0
